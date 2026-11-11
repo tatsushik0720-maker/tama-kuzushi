@@ -67,7 +67,12 @@ canvas{display:block;touch-action:none}
 button{font:inherit;color:inherit;border:0;cursor:pointer;touch-action:manipulation}
 #btnStart{background:var(--accent);color:#fff;font-size:20px;font-weight:700;padding:14px 44px;border-radius:999px;transition:transform .1s}
 #btnStart:active{transform:scale(.96)}
-#btnTheme{background:var(--panel);border:1px solid var(--line);font-size:16px;padding:10px 18px;border-radius:999px}
+#btnTheme,#btnNew{background:var(--panel);border:1px solid var(--line);font-size:16px;padding:10px 18px;border-radius:999px}
+/* ===== 下の帯（玉を戻すボタン） ===== */
+.tabs{display:flex;justify-content:center;padding:6px 12px 0}
+#btnRecall{background:var(--panel);border:1px solid var(--line);font-size:16px;font-weight:600;padding:12px 32px;border-radius:999px;margin-bottom:10px;transition:opacity .15s,transform .1s}
+#btnRecall:disabled{opacity:.3;cursor:default}
+#btnRecall:not(:disabled):active{transform:scale(.96)}
 </style>
 <style>
 html{position:fixed;top:0;right:0;bottom:0;left:0;height:auto;padding:0;overflow:hidden}
@@ -101,9 +106,14 @@ body{position:absolute;top:0;right:0;bottom:0;left:0;height:auto;padding-top:env
 数字のぶんだけ当てるとブロックが消えます。
 ブロックが下の線まで来たら終わりです。</p>
     <button id="btnStart">スタート</button>
+    <button id="btnNew" hidden>最初から</button>
     <button id="btnTheme">見た目：自動</button>
   </div>
 </main>
+
+<div class="tabs">
+  <button id="btnRecall" disabled>玉を戻す</button>
+</div>
 
 <script>
 "use strict";
@@ -124,13 +134,35 @@ const ov = $("ov");
 
 // ===== 保存するデータ（ハイスコアと見た目） =====
 const KEY = "bounce-balls-v1";
-let S = { best: 0, theme: "auto" };
+let S = { best: 0, theme: "auto", game: null }; // game は途中のゲーム（なければ null）
+const KINDS = ["", "bomb", "laser"];              // ブロックの種類（ふつう・爆弾・レーザー）
+const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+// 保存してあった途中のゲームを、1件ずつ形を確かめてから使う（壊れたものは読み飛ばす）
+function cleanGame(g) {
+  if (!g || typeof g !== "object") return null;
+  if (!isInt(g.level, 1, 1e6) || !isInt(g.ballCount, 1, 1e6) || !isInt(g.score, 0, 1e12)) return null;
+  if (!Number.isFinite(g.launchX) || !Array.isArray(g.blocks) || !Array.isArray(g.items)) return null;
+  const bl = g.blocks.filter(b => b && isInt(b.c, 0, COLS - 1) && isInt(b.r, 1, ROWS - 2) &&
+    isInt(b.hp, 1, 1e9) && isInt(b.max, 1, 1e9) && KINDS.includes(b.kind))
+    .map(b => ({ c: b.c, r: b.r, hp: b.hp, max: b.max, kind: b.kind }));
+  const it = g.items.filter(i => i && isInt(i.c, 0, COLS - 1) && isInt(i.r, 1, ROWS - 2)).map(i => ({ c: i.c, r: i.r }));
+  return { level: g.level, ballCount: g.ballCount, score: g.score,
+    launchX: Math.min(COLS - 0.4, Math.max(0.4, g.launchX)), blocks: bl, items: it };
+}
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(KEY) || "{}");
     if (d && Number.isFinite(d.best) && d.best >= 0) S.best = Math.floor(d.best);
     if (d && ["auto", "light", "dark"].includes(d.theme)) S.theme = d.theme;
+    if (d) S.game = cleanGame(d.game);
   } catch (e) { /* 読めなければ最初の値のまま */ }
+}
+// ねらう場面になるたびに、今の盤面を保存する（閉じても続きから遊べる）
+function saveGame() {
+  S.game = { level, ballCount, score, launchX,
+    blocks: blocks.map(b => ({ c: b.c, r: b.r, hp: b.hp, max: b.max, kind: b.kind })),
+    items: items.map(i => ({ c: i.c, r: i.r })) };
+  save();
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* 保存できなくても遊べる */ }
@@ -182,6 +214,8 @@ let items = [];        // 玉が増えるアイテム {c, r, oy}
 let balls = [];        // 飛んでいる玉 {x, y, vx, vy}
 let parts = [];        // 飛び散る粒
 let texts = [];        // 浮かぶ文字（+10 など）
+let rings = [];        // 爆弾の広がる輪
+let beams = [];        // レーザーの光の帯
 let level = 1, ballCount = 1, gained = 0, score = 0;
 let launchX = COLS / 2, nextX = null, toLaunch = 0, stepCount = 0, shotKills = 0;
 let fireDir = { x: 0, y: -1 };
@@ -217,27 +251,54 @@ function addRow() {
   for (let c = 0; c < COLS; c++) {
     if (c === itemCol) { items.push({ c, r: 1, oy: -1 }); continue; }
     if (Math.random() < 0.5) {
-      const hp = level * (level > 3 && Math.random() < 0.15 ? 2 : 1); // たまに固いブロック
-      blocks.push({ c, r: 1, hp, max: hp, flash: 0, oy: -1 });
+      // 3ターン目から、たまに特別なブロックが出る（爆弾7%、レーザー5%）
+      const k = Math.random();
+      const kind = level >= 3 ? (k < 0.07 ? "bomb" : k < 0.12 ? "laser" : "") : "";
+      const hp = level * (!kind && level > 3 && Math.random() < 0.15 ? 2 : 1); // たまに固いブロック
+      blocks.push({ c, r: 1, hp, max: hp, kind, flash: 0, oy: -1 });
       n++;
     }
   }
   if (n === 0) { // 1個もないとつまらないので、必ず1個は置く
     const c = (itemCol + 1 + Math.floor(Math.random() * (COLS - 1))) % COLS;
-    blocks.push({ c, r: 1, hp: level, max: level, flash: 0, oy: -1 });
+    blocks.push({ c, r: 1, hp: level, max: level, kind: "", flash: 0, oy: -1 });
   }
 }
 
 // ===== ゲームを始める =====
 function startGame() {
-  blocks = []; items = []; balls = []; parts = []; texts = [];
+  blocks = []; items = []; balls = []; parts = []; texts = []; rings = []; beams = [];
   level = 1; ballCount = 1; gained = 0; score = 0;
   launchX = COLS / 2; nextX = null; drag = null; aim = null; shake = 0;
   addRow();
   state = "aim";
   ov.hidden = true;
   hud();
+  saveGame();
   beep(520, 0.12, "sine", 0.08, 880);
+}
+
+// ===== 保存してあった盤面から続ける =====
+function resumeGame() {
+  const g = S.game;
+  blocks = g.blocks.map(b => ({ ...b, flash: 0, oy: 0 }));
+  items = g.items.map(i => ({ ...i, oy: 0 }));
+  balls = []; parts = []; texts = []; rings = []; beams = [];
+  level = g.level; ballCount = g.ballCount; score = g.score; gained = 0;
+  launchX = g.launchX; nextX = null; drag = null; aim = null; shake = 0;
+  state = "aim";
+  ov.hidden = true;
+  hud();
+  beep(520, 0.12, "sine", 0.08, 880);
+}
+
+// ===== 飛んでいる玉を全部戻して、次のターンへ進む =====
+function recall() {
+  if (state !== "fire") return;
+  for (const p of balls) burst(p.x, p.y, C.ball, 3);
+  balls = []; toLaunch = 0;
+  beep(600, 0.15, "sine", 0.06, 300);
+  nextTurn();
 }
 
 // ===== 玉を撃つ =====
@@ -256,7 +317,7 @@ function nextTurn() {
   items = items.filter(it => it.r < ROWS - 1);
   addRow();
   hud();
-  if (blocks.some(b => b.r >= ROWS - 1)) gameOver(); else state = "aim";
+  if (blocks.some(b => b.r >= ROWS - 1)) gameOver(); else { state = "aim"; saveGame(); }
 }
 
 // ===== ゲームオーバー =====
@@ -267,7 +328,9 @@ function gameOver() {
   blocks = []; items = [];
   beep(300, 0.6, "sawtooth", 0.1, 50);
   const isNew = score > S.best;
-  if (isNew) { S.best = score; save(); }
+  if (isNew) S.best = score;
+  S.game = null; // 終わったゲームは、続きから遊べないように消す
+  save();
   hud();
   setTimeout(() => { // 演出を見せてから結果を出す
     $("ovTitle").textContent = "おしまい";
@@ -275,6 +338,7 @@ function gameOver() {
     $("ovNew").hidden = !isNew;
     $("ovMsg").textContent = level + "ターンまで進みました。\nベスト：" + S.best;
     $("btnStart").textContent = "もう1回";
+    $("btnNew").hidden = true;
     ov.hidden = false;
     if (isNew) { beep(660, 0.12, "sine", 0.08); setTimeout(() => beep(990, 0.25, "sine", 0.08), 130); }
   }, 900);
@@ -290,6 +354,8 @@ function burst(x, y, color, n) {
 
 // ===== ブロックの色（残り回数が多いほど赤く、少ないほど青く） =====
 function blockColor(b) {
+  if (b.kind === "bomb") return "#565c75";   // 爆弾は灰色
+  if (b.kind === "laser") return "#8a4fff";  // レーザーは紫
   const t = Math.min(1, b.hp / Math.max(1, level));
   return "hsl(" + Math.round(205 - t * 200) + " 72% 52%)";
 }
@@ -364,16 +430,35 @@ function unstick(p) {
 function hitBlock(b) {
   b.hp--; b.flash = 1;
   if (b.hp > 0) { hitBeep(); return; }
-  // 消えた：1回のショットでたくさん消すほど、1個あたりの点が上がる
+  killBlock(b);
+  hud(true);
+}
+
+// ===== ブロックが消えるとき（爆弾とレーザーは、まわりも巻き込む） =====
+function killBlock(b) {
+  if (b.dead) return;
+  // 1回のショットでたくさん消すほど、1個あたりの点が上がる
   b.dead = true;
   shotKills++;
   const pts = 10 * shotKills;
   score += pts;
-  burst(b.c + 0.5, b.r + 0.5, blockColor({ hp: b.max }), 14);
+  burst(b.c + 0.5, b.r + 0.5, blockColor({ hp: b.max, kind: b.kind }), 14);
   texts.push({ x: b.c + 0.5, y: b.r + 0.5, s: "+" + pts, life: 1, color: C.fg });
   shake = Math.min(9, shake + 3.5);
   beep(Math.min(1500, 500 + shotKills * 70), 0.12, "square", 0.05);
-  hud(true);
+  if (b.kind === "bomb") {
+    // 爆弾：まわり8マスのブロックを消す（爆弾どうしは連鎖する）
+    rings.push({ x: b.c + 0.5, y: b.r + 0.5, life: 1 });
+    shake = Math.min(18, shake + 9);
+    beep(140, 0.35, "sawtooth", 0.12, 40);
+    for (const o of blocks) if (!o.dead && Math.abs(o.c - b.c) <= 1 && Math.abs(o.r - b.r) <= 1) killBlock(o);
+  } else if (b.kind === "laser") {
+    // レーザー：同じ段のブロックを全部消す
+    beams.push({ r: b.r, life: 1 });
+    shake = Math.min(18, shake + 6);
+    beep(1600, 0.3, "sawtooth", 0.07, 200);
+    for (const o of blocks) if (!o.dead && o.r === b.r) killBlock(o);
+  }
 }
 
 // ===== 描く =====
@@ -404,9 +489,29 @@ function draw() {
     rr(b.c + 0.05 - s, y + 0.05 - s, 0.9 + s * 2, 0.9 + s * 2, 0.14); ctx.fill();
     if (b.flash > 0.05) { ctx.fillStyle = "rgba(255,255,255," + b.flash * 0.6 + ")"; ctx.fill(); }
     ctx.fillStyle = "#fff";
-    ctx.font = "700 " + (b.hp > 99 ? 0.32 : 0.42) + "px system-ui,sans-serif";
-    ctx.fillText(b.hp, b.c + 0.5, y + 0.53);
+    if (b.kind) { // 特別なブロックは、上に絵、下に数字
+      ctx.font = "700 0.34px system-ui,sans-serif";
+      ctx.fillText(b.kind === "bomb" ? "💣" : "↔", b.c + 0.5, y + 0.36);
+      ctx.font = "700 0.26px system-ui,sans-serif";
+      ctx.fillText(b.hp, b.c + 0.5, y + 0.73);
+    } else {
+      ctx.font = "700 " + (b.hp > 99 ? 0.32 : 0.42) + "px system-ui,sans-serif";
+      ctx.fillText(b.hp, b.c + 0.5, y + 0.53);
+    }
   }
+
+  // レーザーの光の帯
+  for (const m of beams) {
+    ctx.globalAlpha = Math.max(0, m.life) * 0.8; ctx.fillStyle = "#c9a8ff";
+    const h = 0.7 * m.life;
+    ctx.fillRect(0, m.r + 0.5 - h / 2, COLS, h);
+  }
+  // 爆弾の広がる輪
+  for (const g of rings) {
+    ctx.globalAlpha = Math.max(0, g.life); ctx.strokeStyle = C.accent; ctx.lineWidth = 0.12 * g.life + 0.02;
+    ctx.beginPath(); ctx.arc(g.x, g.y, 0.4 + (1 - g.life) * 1.3, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 
   // アイテム（玉+1）
   const pulse = 1 + Math.sin(performance.now() / 250) * 0.08;
@@ -478,6 +583,10 @@ function animate(f) { // f は 60分の1秒を1とした進み具合
   parts = parts.filter(q => q.life > 0);
   for (const t of texts) t.life -= 0.022 * f;
   texts = texts.filter(t => t.life > 0);
+  for (const g of rings) g.life -= 0.05 * f;
+  rings = rings.filter(g => g.life > 0);
+  for (const m of beams) m.life -= 0.06 * f;
+  beams = beams.filter(m => m.life > 0);
   shake *= Math.pow(0.86, f);
 }
 
@@ -492,6 +601,7 @@ function loop(now) {
     acc += dt * mult;
     while (acc >= STEP && state === "fire") { step(); acc -= STEP; }
   } else acc = 0;
+  $("btnRecall").disabled = state !== "fire"; // 玉が飛んでいる間だけ押せる
   animate(dt * 60);
   draw();
   requestAnimationFrame(loop);
@@ -520,7 +630,13 @@ main.addEventListener("pointerup", e => {
 });
 main.addEventListener("pointercancel", () => { drag = null; aim = null; });
 
-$("btnStart").addEventListener("click", () => { initAudio(); startGame(); });
+// タイトルで途中のゲームがあれば「つづきから」、なければ新しく始める
+$("btnStart").addEventListener("click", () => {
+  initAudio();
+  if (state === "title" && S.game) resumeGame(); else startGame();
+});
+$("btnNew").addEventListener("click", () => { initAudio(); startGame(); });
+$("btnRecall").addEventListener("click", recall);
 $("btnTheme").addEventListener("click", () => {
   S.theme = { auto: "light", light: "dark", dark: "auto" }[S.theme];
   save(); applyTheme();
@@ -529,6 +645,11 @@ $("btnTheme").addEventListener("click", () => {
 // ===== 起動 =====
 load();
 applyTheme();
+if (S.game) { // 途中のゲームがあれば、タイトルに「つづきから」を出す
+  $("btnStart").textContent = "つづきから";
+  $("btnNew").hidden = false;
+  $("ovMsg").textContent = S.game.level + "ターン目・スコア " + S.game.score + " の続きがあります。";
+}
 hud();
 resize();
 window.addEventListener("resize", resize);
