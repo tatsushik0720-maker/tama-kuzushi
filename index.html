@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="玉くずし">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#f2f0ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12141c" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<style>:root{color-scheme:light}body{margin:0}img{max-width:100%}[hidden]{display:none!important}*{touch-action:pan-x pan-y}</style>
+<script>
+['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+</script>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>はね返り玉くずし</title>
+<style>
+/* ===== 色（明るい表示） ===== */
+:root{
+  --bg:#f2f0ea; --fg:#22242c; --sub:#7b7f8c; --panel:#ffffff;
+  --line:#d9d6cc; --field:#e6e3da; --accent:#ff6b35; --ball:#22242c;
+}
+/* ===== 色（暗い表示）：自動のときと、ダーク固定のときの2か所に同じ中身を書く ===== */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#12141c; --fg:#f1f1f4; --sub:#8b90a0; --panel:#1c1f2b;
+    --line:#2c3040; --field:#1a1d28; --accent:#ff8a4c; --ball:#ffffff;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12141c; --fg:#f1f1f4; --sub:#8b90a0; --panel:#1c1f2b;
+  --line:#2c3040; --field:#1a1d28; --accent:#ff8a4c; --ball:#ffffff;
+}
+[hidden]{display:none!important}
+*{box-sizing:border-box}
+html,body{height:100%;overflow:hidden;margin:0}
+body{
+  display:flex;flex-direction:column;
+  background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+}
+/* ===== 上のバー（スコアなど） ===== */
+.top{display:flex;gap:8px;padding:10px 12px 8px;max-width:520px;width:100%;margin:0 auto}
+.stat{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 4px;text-align:center}
+.stat small{display:block;font-size:11px;color:var(--sub)}
+.stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+/* スコアが増えたときに、数字がぽんと大きくなる */
+.pop{animation:pop .25s ease-out}
+@keyframes pop{0%{transform:scale(1)}40%{transform:scale(1.35);color:var(--accent)}100%{transform:scale(1)}}
+/* ===== ゲーム画面 ===== */
+main{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none}
+canvas{display:block;touch-action:none}
+/* ===== タイトルとゲームオーバーの表示 ===== */
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  padding:24px;text-align:center;background:color-mix(in srgb,var(--bg) 82%,transparent)}
+#ov h1{margin:0;font-size:30px}
+#ov p{margin:0;font-size:16px;line-height:1.7;color:var(--sub);white-space:pre-line}
+#ovScore{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums}
+#ovNew{color:var(--accent);font-weight:700;font-size:18px;animation:blink .6s infinite alternate}
+@keyframes blink{from{opacity:.4}to{opacity:1}}
+button{font:inherit;color:inherit;border:0;cursor:pointer;touch-action:manipulation}
+#btnStart{background:var(--accent);color:#fff;font-size:20px;font-weight:700;padding:14px 44px;border-radius:999px;transition:transform .1s}
+#btnStart:active{transform:scale(.96)}
+#btnTheme{background:var(--panel);border:1px solid var(--line);font-size:16px;padding:10px 18px;border-radius:999px}
+</style>
+<style>
+html{position:fixed;top:0;right:0;bottom:0;left:0;height:auto;padding:0;overflow:hidden}
+body{position:absolute;top:0;right:0;bottom:0;left:0;height:auto;padding-top:env(safe-area-inset-top,0px);overflow:hidden}
+.tabs{padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (display-mode: standalone) {
+  html{position:static;height:100lvh;overflow:visible}
+  body{position:static;height:100lvh;overflow:visible}
+  .top{padding-top:10px}
+}
+</style>
+
+</head>
+<body>
+
+
+<div class="top">
+  <div class="stat"><small>スコア</small><b id="hScore">0</b></div>
+  <div class="stat"><small>ベスト</small><b id="hBest">0</b></div>
+  <div class="stat"><small>玉</small><b id="hBalls">1</b></div>
+  <div class="stat"><small>ターン</small><b id="hLevel">1</b></div>
+</div>
+
+<main id="main">
+  <canvas id="cv"></canvas>
+  <div id="ov">
+    <h1 id="ovTitle">はね返り玉くずし</h1>
+    <div id="ovScore" hidden>0</div>
+    <div id="ovNew" hidden>新記録！</div>
+    <p id="ovMsg">画面を引っぱって、離すと玉が飛びます。
+数字のぶんだけ当てるとブロックが消えます。
+ブロックが下の線まで来たら終わりです。</p>
+    <button id="btnStart">スタート</button>
+    <button id="btnTheme">見た目：自動</button>
+  </div>
+</main>
+
+<script>
+"use strict";
+// ===== ゲームの決まり（数字を変えると遊び心地が変わる） =====
+const COLS = 7;            // 横のマス数
+const ROWS = 10;           // 縦のマス数（いちばん下の段にブロックが来たら終わり）
+const HU = ROWS + 1.2;     // 画面の高さ（マス単位）
+const FLOOR = ROWS + 0.6;  // 玉を撃つ場所の高さ
+const R = 0.14;            // 玉の半径
+const SPEED = 0.11;        // 玉が1コマで進む距離
+const GAP = 6;             // 玉を続けて撃つ間隔（コマ数）
+const STEP = 1 / 120;      // 1コマの長さ（秒）
+
+// ===== 画面の部品 =====
+const $ = id => document.getElementById(id);
+const main = $("main"), cv = $("cv"), ctx = cv.getContext("2d");
+const ov = $("ov");
+
+// ===== 保存するデータ（ハイスコアと見た目） =====
+const KEY = "bounce-balls-v1";
+let S = { best: 0, theme: "auto" };
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem(KEY) || "{}");
+    if (d && Number.isFinite(d.best) && d.best >= 0) S.best = Math.floor(d.best);
+    if (d && ["auto", "light", "dark"].includes(d.theme)) S.theme = d.theme;
+  } catch (e) { /* 読めなければ最初の値のまま */ }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* 保存できなくても遊べる */ }
+}
+
+// ===== 見た目（自動・ライト・ダーク） =====
+let C = {}; // キャンバスで使う色
+function applyTheme() {
+  const t = S.theme, el = document.documentElement;
+  if (t === "light" || t === "dark") el.setAttribute("data-theme", t); else el.removeAttribute("data-theme");
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+    const dark = t === "dark" || (t !== "light" && /dark/.test(m.media || ""));
+    m.setAttribute("content", dark ? "#12141c" : "#f2f0ea");
+  });
+  const cs = getComputedStyle(el);
+  for (const k of ["bg", "fg", "sub", "line", "field", "accent", "ball"]) C[k] = cs.getPropertyValue("--" + k).trim();
+  $("btnTheme").textContent = "見た目：" + { auto: "自動", light: "ライト", dark: "ダーク" }[t];
+}
+
+// ===== 効果音（Web Audio API で作る。音声ファイルは使わない） =====
+let ac = null, lastBeep = 0;
+function initAudio() {
+  if (ac) { if (ac.state === "suspended") ac.resume(); return; }
+  try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ac = null; }
+}
+function beep(freq, dur, type, vol, slideTo) {
+  if (!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+  o.type = type || "sine";
+  o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(vol || 0.08, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(ac.destination);
+  o.start(t); o.stop(t + dur);
+}
+// 当たった音は、鳴らしすぎないように間隔をあける
+function hitBeep() {
+  const now = performance.now();
+  if (now - lastBeep < 35) return;
+  lastBeep = now;
+  beep(420 + Math.random() * 60, 0.05, "triangle", 0.05);
+}
+
+// ===== ゲームの状態 =====
+let state = "title";   // title=タイトル / aim=ねらう / fire=玉が飛んでいる / over=終わり
+let blocks = [];       // ブロック {c:列, r:段, hp:残り回数, max:最初の回数, flash:光り, oy:ずれ}
+let items = [];        // 玉が増えるアイテム {c, r, oy}
+let balls = [];        // 飛んでいる玉 {x, y, vx, vy}
+let parts = [];        // 飛び散る粒
+let texts = [];        // 浮かぶ文字（+10 など）
+let level = 1, ballCount = 1, gained = 0, score = 0;
+let launchX = COLS / 2, nextX = null, toLaunch = 0, stepCount = 0, shotKills = 0;
+let fireDir = { x: 0, y: -1 };
+let drag = null, aim = null;   // 指の位置と、ねらっている向き
+let shake = 0;                 // 画面の揺れの強さ
+let cell = 40;                 // 1マスの大きさ（ピクセル）
+
+// ===== 画面の大きさに合わせる =====
+function resize() {
+  const w = main.clientWidth, h = main.clientHeight;
+  cell = Math.max(10, Math.floor(Math.min(w / COLS, h / HU)));
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  cv.style.width = cell * COLS + "px";
+  cv.style.height = Math.floor(cell * HU) + "px";
+  cv.width = Math.floor(cell * COLS * dpr);
+  cv.height = Math.floor(cell * HU * dpr);
+  ctx.setTransform(dpr * cell, 0, 0, dpr * cell, 0, 0); // これ以降はマス単位で描ける
+}
+
+// ===== 上のバーの数字を書き直す =====
+function hud(popScore) {
+  $("hScore").textContent = score;
+  $("hBest").textContent = Math.max(S.best, score);
+  $("hBalls").textContent = ballCount;
+  $("hLevel").textContent = level;
+  if (popScore) { const e = $("hScore"); e.classList.remove("pop"); void e.offsetWidth; e.classList.add("pop"); }
+}
+
+// ===== 新しい段を上に足す =====
+function addRow() {
+  const itemCol = Math.floor(Math.random() * COLS); // 1か所は必ず「玉+1」
+  let n = 0;
+  for (let c = 0; c < COLS; c++) {
+    if (c === itemCol) { items.push({ c, r: 1, oy: -1 }); continue; }
+    if (Math.random() < 0.5) {
+      const hp = level * (level > 3 && Math.random() < 0.15 ? 2 : 1); // たまに固いブロック
+      blocks.push({ c, r: 1, hp, max: hp, flash: 0, oy: -1 });
+      n++;
+    }
+  }
+  if (n === 0) { // 1個もないとつまらないので、必ず1個は置く
+    const c = (itemCol + 1 + Math.floor(Math.random() * (COLS - 1))) % COLS;
+    blocks.push({ c, r: 1, hp: level, max: level, flash: 0, oy: -1 });
+  }
+}
+
+// ===== ゲームを始める =====
+function startGame() {
+  blocks = []; items = []; balls = []; parts = []; texts = [];
+  level = 1; ballCount = 1; gained = 0; score = 0;
+  launchX = COLS / 2; nextX = null; drag = null; aim = null; shake = 0;
+  addRow();
+  state = "aim";
+  ov.hidden = true;
+  hud();
+  beep(520, 0.12, "sine", 0.08, 880);
+}
+
+// ===== 玉を撃つ =====
+function fire(dir) {
+  fireDir = dir; toLaunch = ballCount; stepCount = 0; shotKills = 0; nextX = null;
+  state = "fire";
+}
+
+// ===== 玉が全部戻ったら、次のターンへ =====
+function nextTurn() {
+  level++;
+  if (gained > 0) { ballCount += gained; gained = 0; }
+  if (nextX !== null) launchX = nextX;
+  for (const b of blocks) { b.r++; b.oy = -1; }
+  for (const it of items) { it.r++; it.oy = -1; }
+  items = items.filter(it => it.r < ROWS - 1);
+  addRow();
+  hud();
+  if (blocks.some(b => b.r >= ROWS - 1)) gameOver(); else state = "aim";
+}
+
+// ===== ゲームオーバー =====
+function gameOver() {
+  state = "over";
+  shake = 22;
+  for (const b of blocks) burst(b.c + 0.5, b.r + 0.5, blockColor(b), 10); // 全部はじけ飛ぶ
+  blocks = []; items = [];
+  beep(300, 0.6, "sawtooth", 0.1, 50);
+  const isNew = score > S.best;
+  if (isNew) { S.best = score; save(); }
+  hud();
+  setTimeout(() => { // 演出を見せてから結果を出す
+    $("ovTitle").textContent = "おしまい";
+    $("ovScore").textContent = score; $("ovScore").hidden = false;
+    $("ovNew").hidden = !isNew;
+    $("ovMsg").textContent = level + "ターンまで進みました。\nベスト：" + S.best;
+    $("btnStart").textContent = "もう1回";
+    ov.hidden = false;
+    if (isNew) { beep(660, 0.12, "sine", 0.08); setTimeout(() => beep(990, 0.25, "sine", 0.08), 130); }
+  }, 900);
+}
+
+// ===== 粒を飛び散らせる =====
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = 0.02 + Math.random() * 0.07;
+    parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 0.02, life: 1, color, size: 0.06 + Math.random() * 0.1 });
+  }
+}
+
+// ===== ブロックの色（残り回数が多いほど赤く、少ないほど青く） =====
+function blockColor(b) {
+  const t = Math.min(1, b.hp / Math.max(1, level));
+  return "hsl(" + Math.round(205 - t * 200) + " 72% 52%)";
+}
+
+// ===== 1コマぶん進める =====
+function step() {
+  // 玉を1個ずつ間をあけて撃つ
+  if (toLaunch > 0 && stepCount % GAP === 0) {
+    balls.push({ x: launchX, y: FLOOR - R, vx: fireDir.x * SPEED, vy: fireDir.y * SPEED });
+    toLaunch--;
+    hitBeepLow();
+  }
+  stepCount++;
+
+  let removed = false;
+  for (const p of balls) {
+    p.x += p.vx; p.y += p.vy;
+    // 左右と上の壁ではね返る
+    if (p.x < R) { p.x = R; p.vx = Math.abs(p.vx); unstick(p); }
+    if (p.x > COLS - R) { p.x = COLS - R; p.vx = -Math.abs(p.vx); unstick(p); }
+    if (p.y < R) { p.y = R; p.vy = Math.abs(p.vy); }
+    // 下まで落ちたら戻る。最初に落ちた場所が、次に撃つ場所になる
+    if (p.y > FLOOR - R && p.vy > 0) {
+      if (nextX === null) nextX = Math.min(COLS - 0.4, Math.max(0.4, p.x));
+      p.done = true; removed = true; continue;
+    }
+    // ブロックとの当たり判定（丸と四角）
+    for (const b of blocks) {
+      if (b.dead) continue;
+      const l = b.c + 0.04, r = b.c + 0.96, t = b.r + 0.04, bt = b.r + 0.96;
+      const nx = Math.max(l, Math.min(r, p.x)), ny = Math.max(t, Math.min(bt, p.y));
+      let dx = p.x - nx, dy = p.y - ny;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= R * R) continue;
+      if (d2 === 0) { // 玉の中心がブロックの中に入ってしまったとき：来た方向へ戻す
+        p.x -= p.vx; p.y -= p.vy; p.vx = -p.vx; p.vy = -p.vy;
+      } else if (Math.abs(dx) > Math.abs(dy)) { // 横から当たった
+        p.vx = Math.sign(dx) * Math.abs(p.vx); p.x = nx + Math.sign(dx) * R;
+      } else {                                   // 上か下から当たった
+        p.vy = Math.sign(dy) * Math.abs(p.vy); p.y = ny + Math.sign(dy) * R;
+      }
+      hitBlock(b);
+    }
+    // アイテム（玉+1）を拾う
+    for (const it of items) {
+      if (it.got) continue;
+      const dx = p.x - (it.c + 0.5), dy = p.y - (it.r + 0.5);
+      if (dx * dx + dy * dy < 0.32 * 0.32) {
+        it.got = true; gained++;
+        burst(it.c + 0.5, it.r + 0.5, C.accent, 8);
+        texts.push({ x: it.c + 0.5, y: it.r + 0.5, s: "玉+1", life: 1, color: C.accent });
+        beep(700, 0.15, "sine", 0.07, 1400);
+      }
+    }
+  }
+  if (removed) balls = balls.filter(p => !p.done);
+  blocks = blocks.filter(b => !b.dead);
+  items = items.filter(it => !it.got);
+
+  if (toLaunch === 0 && balls.length === 0) nextTurn();
+}
+function hitBeepLow() { beep(260, 0.04, "sine", 0.03); }
+// 玉が真横に行ったり来たりし続けないように、少しだけ下向きにする
+function unstick(p) {
+  if (Math.abs(p.vy) < SPEED * 0.08) {
+    p.vy = SPEED * 0.12;
+    const k = SPEED / Math.hypot(p.vx, p.vy); p.vx *= k; p.vy *= k;
+  }
+}
+
+// ===== ブロックに当たったとき =====
+function hitBlock(b) {
+  b.hp--; b.flash = 1;
+  if (b.hp > 0) { hitBeep(); return; }
+  // 消えた：1回のショットでたくさん消すほど、1個あたりの点が上がる
+  b.dead = true;
+  shotKills++;
+  const pts = 10 * shotKills;
+  score += pts;
+  burst(b.c + 0.5, b.r + 0.5, blockColor({ hp: b.max }), 14);
+  texts.push({ x: b.c + 0.5, y: b.r + 0.5, s: "+" + pts, life: 1, color: C.fg });
+  shake = Math.min(9, shake + 3.5);
+  beep(Math.min(1500, 500 + shotKills * 70), 0.12, "square", 0.05);
+  hud(true);
+}
+
+// ===== 描く =====
+function rr(x, y, w, h, r) { // 角の丸い四角
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
+}
+function draw() {
+  ctx.save();
+  ctx.clearRect(0, 0, COLS, HU);
+  // 画面の揺れ
+  if (shake > 0.2) ctx.translate((Math.random() - 0.5) * shake / cell, (Math.random() - 0.5) * shake / cell);
+
+  // 盤面の背景
+  ctx.fillStyle = C.field; rr(0, 0, COLS, HU, 0.25); ctx.fill();
+
+  // ここまで来たら終わり、の線
+  ctx.strokeStyle = "hsl(0 75% 55% / .55)"; ctx.lineWidth = 0.03;
+  ctx.setLineDash([0.15, 0.15]);
+  ctx.beginPath(); ctx.moveTo(0.1, ROWS - 1); ctx.lineTo(COLS - 0.1, ROWS - 1); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // ブロック
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (const b of blocks) {
+    const y = b.r + b.oy, s = b.flash * 0.04; // 当たった瞬間に少しふくらむ
+    ctx.fillStyle = blockColor(b);
+    rr(b.c + 0.05 - s, y + 0.05 - s, 0.9 + s * 2, 0.9 + s * 2, 0.14); ctx.fill();
+    if (b.flash > 0.05) { ctx.fillStyle = "rgba(255,255,255," + b.flash * 0.6 + ")"; ctx.fill(); }
+    ctx.fillStyle = "#fff";
+    ctx.font = "700 " + (b.hp > 99 ? 0.32 : 0.42) + "px system-ui,sans-serif";
+    ctx.fillText(b.hp, b.c + 0.5, y + 0.53);
+  }
+
+  // アイテム（玉+1）
+  const pulse = 1 + Math.sin(performance.now() / 250) * 0.08;
+  for (const it of items) {
+    const y = it.r + it.oy + 0.5;
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 0.05;
+    ctx.beginPath(); ctx.arc(it.c + 0.5, y, 0.24 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = C.accent; ctx.font = "700 0.24px system-ui,sans-serif";
+    ctx.fillText("+1", it.c + 0.5, y + 0.02);
+  }
+
+  // ねらいの点線（壁ではね返るところまで）
+  if (state === "aim" && aim) {
+    let x = launchX, y = FLOOR - R, vx = aim.x, vy = aim.y;
+    ctx.fillStyle = C.sub;
+    for (let i = 0; i < 26; i++) {
+      x += vx * 0.32; y += vy * 0.32;
+      if (x < R) { x = R; vx = -vx; } else if (x > COLS - R) { x = COLS - R; vx = -vx; }
+      if (y < R) break;
+      ctx.globalAlpha = 1 - i / 28;
+      ctx.beginPath(); ctx.arc(x, y, 0.06, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // 飛んでいる玉
+  ctx.fillStyle = C.ball;
+  for (const p of balls) { ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, Math.PI * 2); ctx.fill(); }
+
+  // 撃つ場所の玉と、玉の数
+  if (state === "aim" || toLaunch > 0) {
+    ctx.beginPath(); ctx.arc(launchX, FLOOR - R, R, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.sub; ctx.font = "600 0.3px system-ui,sans-serif";
+    ctx.fillText("×" + (state === "aim" ? ballCount : toLaunch), launchX, FLOOR + 0.33);
+  }
+  // 次に撃つ場所の目印
+  if (state === "fire" && nextX !== null) {
+    ctx.globalAlpha = 0.4; ctx.fillStyle = C.ball;
+    ctx.beginPath(); ctx.arc(nextX, FLOOR - R, R, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // 最初のターンだけ、遊び方を出す
+  if (state === "aim" && level === 1 && !aim) {
+    ctx.fillStyle = C.sub; ctx.font = "600 0.36px system-ui,sans-serif";
+    ctx.fillText("引っぱって、離す", COLS / 2, ROWS - 2.2);
+  }
+
+  // 飛び散る粒
+  for (const q of parts) {
+    ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.color;
+    ctx.fillRect(q.x - q.size / 2, q.y - q.size / 2, q.size, q.size);
+  }
+  // 浮かぶ文字
+  for (const t of texts) {
+    ctx.globalAlpha = Math.max(0, t.life); ctx.fillStyle = t.color;
+    ctx.font = "800 0.36px system-ui,sans-serif";
+    ctx.fillText(t.s, t.x, t.y - (1 - t.life) * 0.8);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ===== 演出を進める（1画面ぶん） =====
+function animate(f) { // f は 60分の1秒を1とした進み具合
+  for (const b of blocks) { b.oy *= Math.pow(0.78, f); if (b.oy > -0.01) b.oy = 0; b.flash *= Math.pow(0.8, f); }
+  for (const it of items) { it.oy *= Math.pow(0.78, f); if (it.oy > -0.01) it.oy = 0; }
+  for (const q of parts) { q.x += q.vx * f; q.y += q.vy * f; q.vy += 0.004 * f; q.life -= 0.025 * f; }
+  parts = parts.filter(q => q.life > 0);
+  for (const t of texts) t.life -= 0.022 * f;
+  texts = texts.filter(t => t.life > 0);
+  shake *= Math.pow(0.86, f);
+}
+
+// ===== 毎フレームの処理 =====
+let last = 0, acc = 0;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000 || 0);
+  last = now;
+  if (state === "fire") {
+    // 長引いたら早送りする（6秒で2倍、15秒で4倍）
+    const mult = stepCount > 1800 ? 4 : stepCount > 720 ? 2 : 1;
+    acc += dt * mult;
+    while (acc >= STEP && state === "fire") { step(); acc -= STEP; }
+  } else acc = 0;
+  animate(dt * 60);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ===== 操作（指でもマウスでも同じ） =====
+function updateAim(e) {
+  let vx = drag.x - e.clientX, vy = drag.y - e.clientY; // 引っぱった向きの反対へ飛ぶ
+  if (Math.hypot(vx, vy) < 14) { aim = null; return; }  // 少ししか動かしていなければ撃たない
+  if (vy > 0) { vx = -vx; vy = -vy; }                    // 上へなぞっても、同じ線の上向きにねらえる
+  let a = Math.atan2(vy, vx);
+  a = Math.max(-Math.PI + 0.15, Math.min(-0.15, a));     // 真横には撃てないようにする
+  aim = { x: Math.cos(a), y: Math.sin(a) };
+}
+main.addEventListener("pointerdown", e => {
+  initAudio();
+  if (state !== "aim" || e.target.closest("#ov")) return;
+  drag = { x: e.clientX, y: e.clientY, id: e.pointerId }; aim = null;
+  try { main.setPointerCapture(e.pointerId); } catch (err) { /* 使えなくても動く */ }
+});
+main.addEventListener("pointermove", e => { if (drag && e.pointerId === drag.id && state === "aim") updateAim(e); });
+main.addEventListener("pointerup", e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const a = aim; drag = null; aim = null;
+  if (a && state === "aim") fire(a);
+});
+main.addEventListener("pointercancel", () => { drag = null; aim = null; });
+
+$("btnStart").addEventListener("click", () => { initAudio(); startGame(); });
+$("btnTheme").addEventListener("click", () => {
+  S.theme = { auto: "light", light: "dark", dark: "auto" }[S.theme];
+  save(); applyTheme();
+});
+
+// ===== 起動 =====
+load();
+applyTheme();
+hud();
+resize();
+window.addEventListener("resize", resize);
+try { matchMedia("(prefers-color-scheme:dark)").addEventListener("change", applyTheme); } catch (e) { /* 古いブラウザ */ }
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* なくてもよい */ }
+requestAnimationFrame(loop);
+</script>
+
+<style>html,body{overscroll-behavior:none}</style>
+<script>
+(function () {
+  function canScroll(el) {
+    for (; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      var s = getComputedStyle(el);
+      if (/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 1) return true;
+      if (/(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth + 1) return true;
+    }
+    return false;
+  }
+  document.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 1) return;
+    var t = e.target;
+    if (t.closest && t.closest('input,textarea,select,[contenteditable]')) return;
+    if (!canScroll(t)) e.preventDefault();
+  }, { passive: false });
+})();
+</script>
+
+<script>
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+</script>
+</body>
+</html>
