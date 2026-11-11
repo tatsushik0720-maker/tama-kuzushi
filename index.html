@@ -123,8 +123,8 @@ const ROWS = 10;           // 縦のマス数（いちばん下の段にブロ�
 const HU = ROWS + 1.2;     // 画面の高さ（マス単位）
 const FLOOR = ROWS + 0.6;  // 玉を撃つ場所の高さ
 const R = 0.14;            // 玉の半径
-const SPEED = 0.11;        // 玉が1コマで進む距離
-const GAP = 6;             // 玉を続けて撃つ間隔（コマ数）
+const SPEED = 0.125;       // 玉が1コマで進む距離
+const GAP = 5;             // 玉を続けて撃つ間隔（コマ数）
 const STEP = 1 / 120;      // 1コマの長さ（秒）
 
 // ===== 画面の部品 =====
@@ -204,7 +204,9 @@ function hitBeep() {
   const now = performance.now();
   if (now - lastBeep < 35) return;
   lastBeep = now;
-  beep(420 + Math.random() * 60, 0.05, "triangle", 0.05);
+  // 当てるほど音階をのぼっていく
+  const n = Math.min(Math.floor(shotHits / 3), 14);
+  beep(330 * Math.pow(2, (12 * Math.floor(n / 5) + SCALE[n % 5]) / 12), 0.07, "triangle", 0.05);
 }
 
 // ===== ゲームの状態 =====
@@ -216,6 +218,13 @@ let parts = [];        // 飛び散る粒
 let texts = [];        // 浮かぶ文字（+10 など）
 let rings = [];        // 爆弾の広がる輪
 let beams = [];        // レーザーの光の帯
+let flash = 0;         // 画面全体が白く光る強さ
+let freeze = 0;        // 大きな爆発のとき、一瞬だけ時間を止める（秒）
+let shotHits = 0;      // 今のショットで当てた回数（音がだんだん高くなる）
+let comboPop = 0;      // コンボの数字がふくらむ強さ
+let praise = null;     // 「すごい！」などのほめ言葉
+const PRAISE = { 5: "ナイス！", 10: "すごい！", 18: "最高！", 28: "神わざ！" };
+const SCALE = [0, 2, 4, 7, 9]; // 当たった音に使う音階（どう重なっても濁らない）
 let level = 1, ballCount = 1, gained = 0, score = 0;
 let launchX = COLS / 2, nextX = null, toLaunch = 0, stepCount = 0, shotKills = 0;
 let fireDir = { x: 0, y: -1 };
@@ -247,9 +256,10 @@ function hud(popScore) {
 // ===== 新しい段を上に足す =====
 function addRow() {
   const itemCol = Math.floor(Math.random() * COLS); // 1か所は必ず「玉+1」
+  const item2 = Math.random() < 0.35 ? Math.floor(Math.random() * COLS) : -1; // たまにもう1個
   let n = 0;
   for (let c = 0; c < COLS; c++) {
-    if (c === itemCol) { items.push({ c, r: 1, oy: -1 }); continue; }
+    if (c === itemCol || c === item2) { items.push({ c, r: 1, oy: -1 }); continue; }
     if (Math.random() < 0.5) {
       // 3ターン目から、たまに特別なブロックが出る（爆弾7%、レーザー5%）
       const k = Math.random();
@@ -260,7 +270,8 @@ function addRow() {
     }
   }
   if (n === 0) { // 1個もないとつまらないので、必ず1個は置く
-    const c = (itemCol + 1 + Math.floor(Math.random() * (COLS - 1))) % COLS;
+    let c = 0;
+    while (c === itemCol || c === item2) c++;
     blocks.push({ c, r: 1, hp: level, max: level, kind: "", flash: 0, oy: -1 });
   }
 }
@@ -303,12 +314,19 @@ function recall() {
 
 // ===== 玉を撃つ =====
 function fire(dir) {
-  fireDir = dir; toLaunch = ballCount; stepCount = 0; shotKills = 0; nextX = null;
+  fireDir = dir; toLaunch = ballCount; stepCount = 0; shotKills = 0; shotHits = 0; nextX = null;
   state = "fire";
 }
 
 // ===== 玉が全部戻ったら、次のターンへ =====
 function nextTurn() {
+  if (blocks.length === 0) { // 盤面を空にしたらボーナス
+    const bonus = 100 + level * 20;
+    score += bonus;
+    praise = { s: "全消し +" + bonus, life: 1 };
+    flash = Math.max(flash, 0.5);
+    [0, 5, 9, 12, 17].forEach((d, i) => setTimeout(() => beep(520 * Math.pow(2, d / 12), 0.16, "sine", 0.07), i * 70));
+  }
   level++;
   if (gained > 0) { ballCount += gained; gained = 0; }
   if (nextX !== null) launchX = nextX;
@@ -346,6 +364,7 @@ function gameOver() {
 
 // ===== 粒を飛び散らせる =====
 function burst(x, y, color, n) {
+  if (parts.length > 700) return; // 粒が増えすぎて重くならないようにする
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, s = 0.02 + Math.random() * 0.07;
     parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 0.02, life: 1, color, size: 0.06 + Math.random() * 0.1 });
@@ -397,7 +416,7 @@ function step() {
       } else {                                   // 上か下から当たった
         p.vy = Math.sign(dy) * Math.abs(p.vy); p.y = ny + Math.sign(dy) * R;
       }
-      hitBlock(b);
+      hitBlock(b, p);
     }
     // アイテム（玉+1）を拾う
     for (const it of items) {
@@ -427,8 +446,10 @@ function unstick(p) {
 }
 
 // ===== ブロックに当たったとき =====
-function hitBlock(b) {
+function hitBlock(b, p) {
   b.hp--; b.flash = 1;
+  shotHits++;
+  burst(p.x, p.y, blockColor(b), 2); // 当たるたびに小さな火花
   if (b.hp > 0) { hitBeep(); return; }
   killBlock(b);
   hud(true);
@@ -442,7 +463,15 @@ function killBlock(b) {
   shotKills++;
   const pts = 10 * shotKills;
   score += pts;
-  burst(b.c + 0.5, b.r + 0.5, blockColor({ hp: b.max, kind: b.kind }), 14);
+  burst(b.c + 0.5, b.r + 0.5, blockColor({ hp: b.max, kind: b.kind }), 22);
+  rings.push({ x: b.c + 0.5, y: b.r + 0.5, life: 0.55 }); // 消えた場所に小さな輪
+  comboPop = 1;
+  try { if (navigator.vibrate) navigator.vibrate(b.kind ? 40 : 10); } catch (e) { /* 振動は Android だけ */ }
+  if (PRAISE[shotKills]) { // たくさん消すと、ほめ言葉が出る
+    praise = { s: PRAISE[shotKills], life: 1 };
+    flash = Math.max(flash, 0.45);
+    [0, 4, 7, 12].forEach((d, i) => setTimeout(() => beep(660 * Math.pow(2, d / 12), 0.14, "sine", 0.07), i * 60));
+  }
   texts.push({ x: b.c + 0.5, y: b.r + 0.5, s: "+" + pts, life: 1, color: C.fg });
   shake = Math.min(9, shake + 3.5);
   beep(Math.min(1500, 500 + shotKills * 70), 0.12, "square", 0.05);
@@ -450,12 +479,14 @@ function killBlock(b) {
     // 爆弾：まわり8マスのブロックを消す（爆弾どうしは連鎖する）
     rings.push({ x: b.c + 0.5, y: b.r + 0.5, life: 1 });
     shake = Math.min(18, shake + 9);
+    flash = Math.max(flash, 0.6); freeze = 0.07; // 白く光って、一瞬止まる
     beep(140, 0.35, "sawtooth", 0.12, 40);
     for (const o of blocks) if (!o.dead && Math.abs(o.c - b.c) <= 1 && Math.abs(o.r - b.r) <= 1) killBlock(o);
   } else if (b.kind === "laser") {
     // レーザー：同じ段のブロックを全部消す
     beams.push({ r: b.r, life: 1 });
     shake = Math.min(18, shake + 6);
+    flash = Math.max(flash, 0.5); freeze = 0.07;
     beep(1600, 0.3, "sawtooth", 0.07, 200);
     for (const o of blocks) if (!o.dead && o.r === b.r) killBlock(o);
   }
@@ -483,6 +514,15 @@ function draw() {
 
   // ブロック
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  // コンボの大きな数字（ブロックの後ろにうっすら出す）
+  if (state === "fire" && shotKills >= 2) {
+    ctx.globalAlpha = 0.16 + comboPop * 0.2; ctx.fillStyle = C.accent;
+    ctx.font = "900 " + (2.4 * (1 + comboPop * 0.25)) + "px system-ui,sans-serif";
+    ctx.fillText(shotKills, COLS / 2, ROWS / 2 - 0.3);
+    ctx.font = "800 0.5px system-ui,sans-serif";
+    ctx.fillText("コンボ", COLS / 2, ROWS / 2 + 1.2);
+    ctx.globalAlpha = 1;
+  }
   for (const b of blocks) {
     const y = b.r + b.oy, s = b.flash * 0.04; // 当たった瞬間に少しふくらむ
     ctx.fillStyle = blockColor(b);
@@ -538,6 +578,16 @@ function draw() {
   }
 
   // 飛んでいる玉
+  // 玉の軌跡（しっぽ）
+  ctx.strokeStyle = C.ball; ctx.lineWidth = R * 1.3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.globalAlpha = 0.22;
+  for (const p of balls) {
+    if (!p.tr || p.tr.length < 2) continue;
+    ctx.beginPath(); ctx.moveTo(p.tr[0], p.tr[1]);
+    for (let i = 2; i < p.tr.length; i += 2) ctx.lineTo(p.tr[i], p.tr[i + 1]);
+    ctx.lineTo(p.x, p.y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
   ctx.fillStyle = C.ball;
   for (const p of balls) { ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, Math.PI * 2); ctx.fill(); }
 
@@ -571,6 +621,16 @@ function draw() {
     ctx.font = "800 0.36px system-ui,sans-serif";
     ctx.fillText(t.s, t.x, t.y - (1 - t.life) * 0.8);
   }
+  // ほめ言葉（出た瞬間に大きく、だんだん消える）
+  if (praise) {
+    const k = 1 + Math.max(0, praise.life - 0.8) * 3;
+    ctx.globalAlpha = Math.min(1, praise.life * 2.5);
+    ctx.font = "900 " + 0.95 * k + "px system-ui,sans-serif";
+    ctx.lineWidth = 0.12; ctx.strokeStyle = C.bg; ctx.strokeText(praise.s, COLS / 2, ROWS / 2 - 2.2);
+    ctx.fillStyle = C.accent; ctx.fillText(praise.s, COLS / 2, ROWS / 2 - 2.2);
+  }
+  // 画面全体の白い光
+  if (flash > 0.02) { ctx.globalAlpha = flash * 0.55; ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, COLS, HU); }
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -588,6 +648,15 @@ function animate(f) { // f は 60分の1秒を1とした進み具合
   for (const m of beams) m.life -= 0.06 * f;
   beams = beams.filter(m => m.life > 0);
   shake *= Math.pow(0.86, f);
+  flash *= Math.pow(0.82, f);
+  comboPop *= Math.pow(0.85, f);
+  if (praise) { praise.life -= 0.016 * f; if (praise.life <= 0) praise = null; }
+  // 玉の軌跡のために、少し前までの位置を覚えておく
+  for (const p of balls) {
+    if (!p.tr) p.tr = [];
+    p.tr.push(p.x, p.y);
+    if (p.tr.length > 10) p.tr.splice(0, 2);
+  }
 }
 
 // ===== 毎フレームの処理 =====
@@ -598,8 +667,11 @@ function loop(now) {
   if (state === "fire") {
     // 長引いたら早送りする（6秒で2倍、15秒で4倍）
     const mult = stepCount > 1800 ? 4 : stepCount > 720 ? 2 : 1;
-    acc += dt * mult;
-    while (acc >= STEP && state === "fire") { step(); acc -= STEP; }
+    if (freeze > 0) freeze -= dt; // 爆発の直後は一瞬止める
+    else {
+      acc += dt * mult;
+      while (acc >= STEP && state === "fire" && freeze <= 0) { step(); acc -= STEP; }
+    }
   } else acc = 0;
   $("btnRecall").disabled = state !== "fire"; // 玉が飛んでいる間だけ押せる
   animate(dt * 60);
